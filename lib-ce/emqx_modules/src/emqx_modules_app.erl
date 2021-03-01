@@ -30,7 +30,9 @@ start(_Type, _Args) ->
     application:load(emqx),
     {ok, Pid} = emqx_mod_sup:start_link(),
     ok = emqx_modules:load(),
+    emqx_ctl:register_command(modules, {emqx_modules, cli}, []),
     {ok, Pid}.
 
 stop(_State) ->
+    emqx_ctl:unregister_command(modules),
     emqx_modules:unload().
