@@ -2,6 +2,8 @@ name: Cross build packages
 
 on:
   push:
+    branches:
+      - chore/*
     tags:
       - v*
   release:
@@ -15,8 +17,6 @@ on:
 jobs:
   windows:
     runs-on: windows-2019
-
-    if: startsWith(github.ref, 'refs/tags/')
 
     steps:
     - uses: actions/checkout@v1
@@ -35,6 +35,8 @@ jobs:
         #     scoop bucket add extras https://github.com/lukesampson/scoop-extras.git
         #     scoop update
         #     scoop install sudo curl vcredist2013
+
+        bash --version
 
         $env:PATH = "${{ steps.install_erlang.outputs.erlpath }}\bin;$env:PATH"
 
@@ -121,6 +123,8 @@ jobs:
 
   linux:
     runs-on: ubuntu-20.04
+
+    if: startsWith(github.ref, 'refs/tags/')
 
     strategy:
       matrix:
