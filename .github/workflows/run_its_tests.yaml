@@ -1,0 +1,114 @@
+name: Integration Test Suite
+
+on:
+  push:
+  release:
+    types:
+      - published
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-20.04
+    container: emqx/build-env:erl23.2.7-ubuntu20.04
+    steps:
+    - uses: actions/checkout@v1
+    - name: build packages
+      run: |
+        if make emqx-ee --dry-run > /dev/null 2>&1; then
+          echo "https://ci%40emqx.io:${{ secrets.CI_GIT_TOKEN }}@github.com" > $HOME/.git-credentials
+          git config --global credential.helper store
+          echo "${{ secrets.CI_GIT_TOKEN }}" >> ./scripts/git-token
+          make emqx-ee-zip
+        else
+          make emqx-zip
+        fi
+    - uses: actions/upload-artifact@v2
+      with:
+        name: emqx
+        path: _packages/**/*.zip
+    
+  mysql:
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        mysql_tag:
+        - 5.7
+        - 8
+
+    needs: build
+    steps:
+    - uses: actions/checkout@v2
+    - uses: actions/download-artifact@v2
+      with:
+        name: emqx
+        path: /tmp
+    - name: run emqx
+      run: |
+          unzip -q /tmp/emqx/emqx*.zip -d /opt
+          sed -i 's|listener.wss.external[ \t]*=.*|listener.wss.external = 8085|g' /opt/emqx/etc/emqx.conf
+          /opt/emqx/bin/emqx start || ( tail /opt/emqx/log/erlang.log.1 && exit 1 )
+    - name: docker compose up
+      timeout-minutes: 5
+      env:
+        MYSQL_TAG: ${{ matrix.mysql_tag }}
+      run: |
+        docker-compose \
+          -f .ci/docker-compose-file/docker-compose-mysql-tls.yaml \
+          -f .ci/docker-compose-file/docker-compose.yaml \
+          up -d --build
+        while [ $(docker ps -a --filter name=client --filter exited=0 | wc -l) \
+             != $(docker ps -a --filter name=client | wc -l) ]; do
+          sleep 1
+        done 
+        docker ps -a
+    - uses: actions/setup-java@v1
+      with:
+        java-version: '8' # The JDK version to make available on the path.
+        java-package: jdk # (jre, jdk, or jdk+fx) - defaults to jdk
+        architecture: x64 # (x64 or x86) - defaults to x64
+    - name: install jmeter
+      timeout-minutes: 10
+      env:
+          JMETER_VERSION: 5.3
+      run: |
+        wget --no-check-certificate -O /tmp/apache-jmeter.tgz https://downloads.apache.org/jmeter/binaries/apache-jmeter-$JMETER_VERSION.tgz
+        cd /tmp && tar -xvf apache-jmeter.tgz
+        echo "jmeter.save.saveservice.output_format=xml" >> /tmp/apache-jmeter-$JMETER_VERSION/user.properties
+        echo "jmeter.save.saveservice.response_data.on_error=true" >> /tmp/apache-jmeter-$JMETER_VERSION/user.properties
+        wget -O /tmp/apache-jmeter-$JMETER_VERSION/lib/ext/mqtt-xmeter-1.13-jar-with-dependencies.jar https://github.com/emqx/mqtt-jmeter/raw/master/Download/v1.13.0/mqtt-xmeter-1.13-jar-with-dependencies.jar
+        ln -s /tmp/apache-jmeter-$JMETER_VERSION /opt/jmeter
+    - name: run jmeter
+      run: |
+        wget -O "/opt/jmeter/lib/mysql-connector-java-8.0.16.jar" https://repo1.maven.org/maven2/mysql/mysql-connector-java/8.0.16/mysql-connector-java-8.0.16.jar
+        /opt/jmeter/bin/jmeter.sh \
+          -Jjmeter.save.saveservice.output_format=xml -n \
+          -t .ci/integration-test-suite/git_mysql_acl.jmx \
+          -Droute="apps/emqx_auth_mysql/test/emqx_auth_mysql_SUITE_data" \
+          -Dmysql_ip="127.0.0.1" \
+          -Demqx_ip="127.0.0.1" \
+          -Ddbname="mqtt" \
+          -Dmysql_user="ssluser" \
+          -Dmysql_pwd="public" \
+          -l jmeter_logs/mysql_acl.jtl \
+          -j jmeter_logs/mysql_acl.log
+    - name: check logs
+      run: |
+        if ! tail -n 1 jmeter_logs/mysql_acl.log | grep -oE 'Err:[ \t]*0' > /dev/null 2>&1; then
+          exit 1
+        fi
+    - uses: actions/upload-artifact@v1
+      if: failure()
+      with:
+        name: jmeter_logs_mysql_${{ matrix.mysql_tag }}
+        path: ./jmeter_logs
+
+  delete-artifact:
+    runs-on: ubuntu-20.04
+    needs: [mysql]
+    steps:
+    - uses: geekyeggo/delete-artifact@v1
+      with:
+        name: emqx

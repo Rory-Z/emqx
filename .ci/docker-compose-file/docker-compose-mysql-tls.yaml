@@ -12,6 +12,8 @@ services:
       - ../../apps/emqx_auth_mysql/test/emqx_auth_mysql_SUITE_data/ca.pem:/etc/certs/ca-cert.pem
       - ../../apps/emqx_auth_mysql/test/emqx_auth_mysql_SUITE_data/server-cert.pem:/etc/certs/server-cert.pem
       - ../../apps/emqx_auth_mysql/test/emqx_auth_mysql_SUITE_data/server-key.pem:/etc/certs/server-key.pem
+    ports:
+        - 3306:3306
     networks:
       emqx_bridge:
         ipv4_address: 172.100.239.12
@@ -27,3 +29,22 @@ services:
       --ssl-ca=/etc/certs/ca-cert.pem
       --ssl-cert=/etc/certs/server-cert.pem
       --ssl-key=/etc/certs/server-key.pem
+
+  mysql_client:
+    container_name: mysql_client
+    image: mysql:${MYSQL_TAG}
+    networks:
+      emqx_bridge:
+       ipv4_address: 172.100.239.32
+       ipv6_address: 2001:3200:3200::32
+    depends_on:
+      - mysql_server
+    command:
+      - /bin/bash
+      - -c
+      - |
+        service mysql start
+        echo "show tables;" | mysql -h mysql_server -u root -ppublic mqtt mqtt
+        while [[ $$? -ne 0 ]];do echo "show tables;" | mysql -h mysql_server -u root -ppublic mqtt; done
+        echo "create user 'ssluser'@'%' identified by 'public' require x509;" | mysql -h mysql_server -u root -ppublic mqtt
+        echo "SELECT DISTINCT CONCAT('User: ''',user,'''@''',host,''';') AS query FROM mysql.user;" | mysql -h mysql_server -u root -ppublic mqtt
