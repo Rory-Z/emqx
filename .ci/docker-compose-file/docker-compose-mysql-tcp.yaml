@@ -8,6 +8,8 @@ services:
     environment:
       MYSQL_ROOT_PASSWORD: public
       MYSQL_DATABASE: mqtt
+    ports:
+      - 3306:3306
     networks:
       - emqx_bridge
     command:
