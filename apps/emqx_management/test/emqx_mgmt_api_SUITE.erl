@@ -262,6 +262,11 @@ clients(_) ->
     {ok, Ok} = request_api(delete, api_path(["clients", binary_to_list(ClientId1)]), auth_header_()),
     ?assertEqual(?SUCCESS, get(<<"code">>, Ok)),
 
+    dbg:tracer(),
+    dbg:p(all, c),
+    dbg:tpl(emqx_mgmt, kickout_client, cx),
+    dbg:tpl(emqx_mgmt, rpc_call, cx),
+    dbg:tpl(emqx_cm, kick_session, cx),
     {ok, NotFound0} = request_api(delete, api_path(["clients", binary_to_list(ClientId1)]), auth_header_()),
     ?assertEqual(?ERROR12, get(<<"code">>, NotFound0)),
 
@@ -278,7 +283,8 @@ clients(_) ->
     ?assertEqual(0, length(get(<<"data">>, EmptyAclCache))),
 
     {ok, Ok1} = request_api(delete, api_path(["clients", binary_to_list(ClientId2), "acl_cache"]), auth_header_()),
-    ?assertEqual(?SUCCESS, get(<<"code">>, Ok1)).
+    ?assertEqual(?SUCCESS, get(<<"code">>, Ok1)),
+    meck:unload(emqx_mgmt).
 
 receive_exit(0) ->
     ok;
