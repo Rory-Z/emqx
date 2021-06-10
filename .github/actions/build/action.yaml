@@ -1,0 +1,105 @@
+name: 'Build EMQ X'
+inputs:
+  old_vsns:
+    description: "upgrade base vsn"
+    default: ""
+  source_path:
+    description: "Code Path"
+    default: "${{ github.workspace }}"
+  otp:
+    description: "Erlang OTP"
+    required: true
+  profile:
+    description: "emqx/emqx-edge/emqx-ee"
+    required: true
+    default: "emqx"
+  arch:
+    description: "package arch"
+    required: true
+    default: "amd64"
+  system:
+    description: "os system"
+    required: "true"
+    default: "ubuntu20.04"
+outputs:
+  packages_path:
+    description: "Package Path"
+    value: ${{ steps.build_emqx_packages.outputs.packages_path }}
+runs:
+  using: "composite"
+  steps:
+    - name: prepare docker
+      shell: bash
+      run: |
+        mkdir -p $HOME/.docker
+        echo '{ "experimental": "enabled" }' | tee $HOME/.docker/config.json
+        echo '{ "experimental": true, "storage-driver": "overlay2", "max-concurrent-downloads": 50, "max-concurrent-uploads": 50}' | sudo tee /etc/docker/daemon.json
+        sudo systemctl restart docker
+        docker info
+        docker buildx create --use --name mybuild
+        docker run --rm --privileged tonistiigi/binfmt --install all
+    - name: downloads old emqx zip packages
+      shell: bash
+      env:
+        PROFILE: ${{ inputs.profile }}
+        ARCH: ${{ inputs.arch }}
+        SYSTEM: ${{ inputs.system }}
+        OLD_VSNS: ${{ inputs.old_vsns }}
+        SOURCE: ${{ inputs.source_path }}
+      run: |
+        set -e -x -u
+        broker=${{ inputs.profile }}
+        if [ $PROFILE = "emqx" ];then
+            broker="emqx-ce"
+        fi
+        if [ ! -z "$(echo $SYSTEM | grep -oE 'raspbian')" ]; then
+            export ARCH="arm"
+        fi
+
+        mkdir -p $SOURCE/_upgrade_base
+        cd $SOURCE/_upgrade_base
+        old_vsns=($(echo $OLD_VSNS | tr ' ' ' '))
+        for tag in ${old_vsns[@]}; do
+          if [ ! -z "$(echo $(curl -I -m 10 -o /dev/null -s -w %{http_code} https://s3-us-west-2.amazonaws.com/packages.emqx/$broker/$tag/$PROFILE-$SYSTEM-${tag#[e|v]}-$ARCH.zip) | grep -oE "^[23]+")" ];then
+            wget --no-verbose https://s3-us-west-2.amazonaws.com/packages.emqx/$broker/$tag/$PROFILE-$SYSTEM-${tag#[e|v]}-$ARCH.zip
+            wget --no-verbose https://s3-us-west-2.amazonaws.com/packages.emqx/$broker/$tag/$PROFILE-$SYSTEM-${tag#[e|v]}-$ARCH.zip.sha256
+            echo "$(cat $PROFILE-$SYSTEM-${tag#[e|v]}-$ARCH.zip.sha256) $PROFILE-$SYSTEM-${tag#[e|v]}-$ARCH.zip" | sha256sum -c || exit 1
+          fi
+        done
+    - name: build emqx packages
+      shell: bash
+      id: build_emqx_packages
+      env:
+        SOURCE: ${{ inputs.source_path }}
+        ERL_OTP: ${{ inputs.otp }}
+        PROFILE: ${{ inputs.profile }}
+        ARCH: ${{ inputs.arch }}
+        SYSTEM: ${{ inputs.system }}
+      run: |
+        set -e -u
+        cd $SOURCE 
+        docker buildx build --no-cache \
+          --platform=linux/$ARCH \
+          -t cross_build_emqx_for_$SYSTEM \
+          -f .ci/build_packages/Dockerfile \
+          --build-arg BUILD_FROM=emqx/build-env:$ERL_OTP-$SYSTEM \
+          --build-arg EMQX_NAME=$PROFILE \
+          --output type=tar,dest=/tmp/cross-build-$PROFILE-for-$SYSTEM.tar .
+
+        mkdir -p /tmp/packages/$PROFILE
+        tar -xvf /tmp/cross-build-$PROFILE-for-$SYSTEM.tar --wildcards emqx/_packages/$PROFILE/*
+        mv emqx/_packages/$PROFILE/* /tmp/packages/$PROFILE/
+        rm -rf /tmp/cross-build-$PROFILE-for-$SYSTEM.tar
+
+        docker rm -f $(docker ps -a -q)
+        docker volume prune -f
+
+        if [ -d /tmp/packages/$PROFILE ]; then
+          cd /tmp/packages/$PROFILE
+            for var in $(ls emqx-* ); do
+              bash -c "echo $(sha256sum $var | awk '{print $1}') > $var.sha256"
+            done
+          cd -
+        fi
+
+        echo "::set-output name=packages_path::/tmp/packages/$PROFILE"
