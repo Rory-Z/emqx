@@ -1,0 +1,15 @@
+%% -*-: erlang -*-
+{VSN,
+ [
+    {"4.3.0", [
+      {load_module, emqx_coap_mqtt_adapter}
+    ]},
+    {<<".*">>, []}
+ ],
+ [
+    {"4.3.0", [
+      {load_module, emqx_coap_mqtt_adapter}
+    ]},
+    {<<".*">>, []}
+ ]
+}.

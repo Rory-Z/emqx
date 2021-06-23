@@ -21,7 +21,7 @@
 -include_lib("emqx/include/logger.hrl").
 
 %% ACL Callbacks
--export([ check_authz/4
+-export([ check/4
         , description/0
         ]).
 
@@ -33,7 +33,7 @@
 description() ->
     "AuthZ with redis".
 
-check_authz(Client, PubSub, Topic,
+check(Client, PubSub, Topic,
             #{<<"resource_id">> := ResourceID,
               <<"cmd">> := CMD 
              }) ->

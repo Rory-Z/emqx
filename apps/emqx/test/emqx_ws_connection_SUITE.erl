@@ -62,9 +62,9 @@ init_per_testcase(TestCase, Config) when
                                  message_queue_len => 8000
                                 }
                      end),
-    %% Mock emqx_access_control
-    ok = meck:new(emqx_access_control, [passthrough, no_history, no_link]),
-    ok = meck:expect(emqx_access_control, check_acl, fun(_, _, _) -> allow end),
+    %% Mock emqx_authz
+    ok = meck:new(emqx_authz, [passthrough, no_history, no_link]),
+    ok = meck:expect(emqx_authz, check, fun(_, _, _) -> allow end),
     %% Mock emqx_hooks
     ok = meck:new(emqx_hooks, [passthrough, no_history, no_link]),
     ok = meck:expect(emqx_hooks, run, fun(_Hook, _Args) -> ok end),
@@ -97,7 +97,7 @@ end_per_testcase(TestCase, _Config) when
     lists:foreach(fun meck:unload/1,
                   [cowboy_req,
                    emqx_zone,
-                   emqx_access_control,
+                   emqx_authz,
                    emqx_broker,
                    emqx_hooks,
                    emqx_metrics

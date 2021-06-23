@@ -23,7 +23,7 @@
 %% ACL Callbacks
 -export([ description/0
         , parse_query/1
-        , check_authz/4
+        , check/4
         ]).
 
 -ifdef(TEST).
@@ -45,7 +45,7 @@ parse_query(Sql) ->
             {Sql, []}
     end.
 
-check_authz(Client, PubSub, Topic,
+check(Client, PubSub, Topic,
             #{<<"resource_id">> := ResourceID,
               <<"sql">> := {SQL, Params}
              }) ->
