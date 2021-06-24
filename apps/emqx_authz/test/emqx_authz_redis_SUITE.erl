@@ -79,30 +79,30 @@ t_authz(_) ->
     meck:expect(emqx_resource, query, fun(_, _) -> {ok, []} end),
     % nomatch
     ?assertEqual(deny,
-                 emqx_access_control:check_acl(ClientInfo, subscribe, <<"#">>)),
+                 emqx_authz:check(ClientInfo, subscribe, <<"#">>)),
     ?assertEqual(deny,
-                 emqx_access_control:check_acl(ClientInfo, publish, <<"#">>)),
+                 emqx_authz:check(ClientInfo, publish, <<"#">>)),
 
 
     meck:expect(emqx_resource, query, fun(_, _) -> {ok, ?RULE1 ++ ?RULE2} end),
     % nomatch
     ?assertEqual(deny,
-        emqx_access_control:check_acl(ClientInfo, subscribe, <<"+">>)),
+        emqx_authz:check(ClientInfo, subscribe, <<"+">>)),
     % nomatch
     ?assertEqual(deny,
-        emqx_access_control:check_acl(ClientInfo, subscribe, <<"test/username">>)),
+        emqx_authz:check(ClientInfo, subscribe, <<"test/username">>)),
 
     ?assertEqual(allow,
-        emqx_access_control:check_acl(ClientInfo, publish, <<"test/clientid">>)),
+        emqx_authz:check(ClientInfo, publish, <<"test/clientid">>)),
     ?assertEqual(allow,
-        emqx_access_control:check_acl(ClientInfo, publish, <<"test/clientid">>)),
+        emqx_authz:check(ClientInfo, publish, <<"test/clientid">>)),
 
     meck:expect(emqx_resource, query, fun(_, _) -> {ok, ?RULE3} end),
 
     ?assertEqual(allow,
-        emqx_access_control:check_acl(ClientInfo, subscribe, <<"#">>)),
+        emqx_authz:check(ClientInfo, subscribe, <<"#">>)),
     % nomatch
     ?assertEqual(deny,
-        emqx_access_control:check_acl(ClientInfo, publish, <<"#">>)),
+        emqx_authz:check(ClientInfo, publish, <<"#">>)),
     ok.
 

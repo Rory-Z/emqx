@@ -26,7 +26,8 @@
         , compile/1
         , lookup/0
         , update/1
-        , check_authz/5
+        , check/3
+        , check_rules/5
         , match/4
         ]).
 
@@ -41,7 +42,7 @@ init() ->
     #{<<"authz">> := #{<<"rules">> := Rules}} = hocon_schema:check_plain(emqx_authz_schema, RawConf),
     ok = application:set_env(?APP, rules, Rules),
     NRules = [compile(Rule) || Rule <- Rules],
-    ok = emqx_hooks:add('client.check_acl', {?MODULE, check_authz, [NRules]},  -1).
+    ok = emqx_hooks:add('client.check_acl', {?MODULE, check_rules, [NRules]},  -1).
 
 lookup() ->
     application:get_env(?APP, rules, []).
@@ -51,7 +52,7 @@ update(Rules) ->
     NRules = [compile(Rule) || Rule <- Rules],
     Action = find_action_in_hooks(),
     ok = emqx_hooks:del('client.check_acl', Action),
-    ok = emqx_hooks:add('client.check_acl', {?MODULE, check_authz, [NRules]},  -1),
+    ok = emqx_hooks:add('client.check_acl', {?MODULE, check_rules, [NRules]},  -1),
     ok = emqx_acl_cache:empty_acl_cache().
 
 %%--------------------------------------------------------------------
@@ -60,7 +61,7 @@ update(Rules) ->
 
 find_action_in_hooks() ->
     Callbacks = emqx_hooks:lookup('client.check_acl'),
-    [Action] = [Action || {callback,{?MODULE, check_authz, _} = Action, _, _} <- Callbacks ],
+    [Action] = [Action || {callback,{?MODULE, check_rules, _} = Action, _, _} <- Callbacks ],
     Action.
 
 create_resource(#{<<"type">> := DB,
@@ -148,13 +149,38 @@ b2l(B) when is_binary(B) -> binary_to_list(B).
 %% ACL callbacks
 %%--------------------------------------------------------------------
 
-%% @doc Check ACL
--spec(check_authz(emqx_types:clientinfo(), emqx_types:all(), emqx_topic:topic(), emqx_permission_rule:acl_result(), rules())
+check(ClientInfo, PubSub, Topic) ->
+    case emqx_acl_cache:is_enabled() of
+        true  -> check_acl_cache(ClientInfo, PubSub, Topic);
+        false -> do_check(ClientInfo, PubSub, Topic)
+    end.
+
+check_acl_cache(ClientInfo, PubSub, Topic) ->
+    case emqx_acl_cache:get_acl_cache(PubSub, Topic) of
+        not_found ->
+            AclResult = do_check(ClientInfo, PubSub, Topic),
+            emqx_acl_cache:put_acl_cache(PubSub, Topic, AclResult),
+            AclResult;
+        AclResult -> AclResult
+    end.
+
+do_check(ClientInfo, PubSub, Topic) ->
+    case run_hooks('client.check_acl', [ClientInfo, PubSub, Topic], deny) of
+        allow  -> allow;
+        _ -> deny
+    end.
+
+-compile({inline, [run_hooks/3]}).
+run_hooks(Name, Args, Acc) ->
+    ok = emqx_metrics:inc(Name), emqx_hooks:run_fold(Name, Args, Acc).
+
+%% @doc Check Rules
+-spec(check_rules(emqx_types:clientinfo(), emqx_types:all(), emqx_topic:topic(), emqx_permission_rule:acl_result(), rules())
       -> {ok, allow} | {ok, deny} | deny).
-check_authz(#{username := Username,
+check_rules(#{username := Username,
               peerhost := IpAddress
              } = Client, PubSub, Topic, DefaultResult, Rules) ->
-    case do_check_authz(Client, PubSub, Topic, Rules) of
+    case do_check_rules(Client, PubSub, Topic, Rules) of
         {matched, allow} ->
             ?LOG(info, "Client succeeded authorizationa: Username: ~p, IP: ~p, Topic: ~p, Permission: allow", [Username, IpAddress, Topic]),
             emqx_metrics:inc(?ACL_METRICS(allow)),
@@ -168,25 +194,25 @@ check_authz(#{username := Username,
             DefaultResult
     end.
 
-do_check_authz(Client, PubSub, Topic,
+do_check_rules(Client, PubSub, Topic,
                [Connector = #{<<"principal">> := Principal,
                               <<"type">> := DB} | Tail] ) ->
     case match_principal(Client, Principal) of
         true ->
             Mod = list_to_existing_atom(io_lib:format("~s_~s",[emqx_authz, DB])),
-            case Mod:check_authz(Client, PubSub, Topic, Connector) of
-                nomatch -> do_check_authz(Client, PubSub, Topic, Tail);
+            case Mod:check(Client, PubSub, Topic, Connector) of
+                nomatch -> do_check_rules(Client, PubSub, Topic, Tail);
                 Matched -> Matched
             end;
-        false -> do_check_authz(Client, PubSub, Topic, Tail)
+        false -> do_check_rules(Client, PubSub, Topic, Tail)
     end;
-do_check_authz(Client, PubSub, Topic,
+do_check_rules(Client, PubSub, Topic,
                [#{<<"permission">> := Permission} = Rule | Tail]) ->
     case match(Client, PubSub, Topic, Rule) of
         true -> {matched, Permission};
-        false -> do_check_authz(Client, PubSub, Topic, Tail)
+        false -> do_check_rules(Client, PubSub, Topic, Tail)
     end;
-do_check_authz(_Client, _PubSub, _Topic, []) -> nomatch.
+do_check_rules(_Client, _PubSub, _Topic, []) -> nomatch.
 
 match(Client, PubSub, Topic,
       #{<<"principal">> := Principal,

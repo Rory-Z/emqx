@@ -34,10 +34,11 @@ init_per_suite(Config) ->
     %% CM Meck
     ok = meck:new(emqx_cm, [passthrough, no_history, no_link]),
     %% Access Control Meck
+    ok = meck:new(emqx_authz, [passthrough, no_history, no_link]),
     ok = meck:new(emqx_access_control, [passthrough, no_history, no_link]),
     ok = meck:expect(emqx_access_control, authenticate,
                      fun(_) -> {ok, #{auth_result => success}} end),
-    ok = meck:expect(emqx_access_control, check_acl, fun(_, _, _) -> allow end),
+    ok = meck:expect(emqx_authz, check_acl, fun(_, _, _) -> allow end),
     %% Broker Meck
     ok = meck:new(emqx_broker, [passthrough, no_history, no_link]),
     %% Hooks Meck
@@ -54,6 +55,7 @@ init_per_suite(Config) ->
 
 end_per_suite(_Config) ->
     meck:unload([emqx_access_control,
+                 emqx_authz,
                  emqx_metrics,
                  emqx_session,
                  emqx_broker,
