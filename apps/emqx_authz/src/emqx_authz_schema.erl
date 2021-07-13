@@ -4,18 +4,46 @@
 
 -type action() :: publish | subscribe | all.
 -type permission() :: allow | deny.
+% -type url() :: emqx_http_lib:uri_map().
 
 -reflect_type([ permission/0
               , action/0
+%             , url/0
               ]).
 
--export([structs/0, fields/1]).
+% -typerefl_from_string({url/0, emqx_http_lib, uri_parse}).
+
+-export([ structs/0
+        , fields/1
+        ]).
 
 structs() -> ["emqx_authz"].
 
 fields("emqx_authz") ->
     [ {rules, rules()}
     ];
+fields(http) ->
+    [ {principal, principal()}
+    , {type, #{type => http}}
+    , {config, #{type => hoconsc:ref(?MODULE, http_config)}}
+    ];
+fields(http_config) ->
+    [ {url, #{type => binary(), validate => [fun check_url/1]}}
+    % {url, #{type => url()}}
+    , {headers, #{type => hoconsc:ref(?MODULE, headers)}}
+    , {method,  #{type => hoconsc:enum([get, post]), default => get}}
+    ];
+fields(headers) ->
+    [ {'Accept',            #{type => binary(), default => <<"application/json">>}}
+    , {'Accept-Encoding',   #{type => binary(), default => <<"gzip, deflate">>}}
+    , {'Accept-Language',   #{type => binary(), default => <<"en-US">>}}
+    , {'Authorization',     #{type => binary(), nullable => true}}
+    , {'Cache-Control',     #{type => binary(), default => <<"no-cache">>}}
+    , {'Connection',        #{type => binary(), default => <<"keep-alive">>}}
+    , {'Content-Type',      #{type => binary(), default => <<"application/json">>}}
+    , {'Keep-Alive',        #{type => binary(), nullable => true}}
+    ];
+
 fields(mongo) ->
     connector_fields(mongo) ++
     [ {collection, #{type => atom()}}
@@ -75,9 +103,10 @@ fields(eq_topic) ->
 union_array(Item) when is_list(Item) ->
     hoconsc:array(hoconsc:union(Item)).
 
-rules() -> 
+rules() ->
     #{type => union_array(
                 [ hoconsc:ref(?MODULE, simple_rule)
+                , hoconsc:ref(?MODULE, http)
                 , hoconsc:ref(?MODULE, mysql)
                 , hoconsc:ref(?MODULE, pgsql)
                 , hoconsc:ref(?MODULE, redis)
@@ -108,7 +137,23 @@ query() ->
      }.
 
 connector_fields(DB) ->
-    Mod = list_to_existing_atom(io_lib:format("~s_~s",[emqx_connector, DB])),
+    Mod0 = io_lib:format("~s_~s",[emqx_connector, DB]),
+    Mod = try
+              list_to_existing_atom(Mod0)
+          catch
+              error:badarg ->
+                  list_to_atom(Mod0);
+              Error ->
+                  erlang:error(Error)
+          end,
     [ {principal, principal()}
     , {type, #{type => DB}}
     ] ++ Mod:fields("").
+
+check_url(URL) ->
+    case emqx_http_lib:uri_parse(URL) of
+        {ok, _} -> true;
+        {error, _} -> false
+    end.
+
+
