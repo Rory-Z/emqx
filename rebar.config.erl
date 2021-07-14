@@ -271,7 +271,7 @@ relx_apps(ReleaseType) ->
     , emqx_resource
     , emqx_connector
     , emqx_authn
-    , emqx_authz
+    , {emqx_authz, load}
     , emqx_gateway
     , emqx_data_bridge
     , emqx_rule_engine

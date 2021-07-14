@@ -4,14 +4,14 @@
 
 -type action() :: publish | subscribe | all.
 -type permission() :: allow | deny.
-% -type url() :: emqx_http_lib:uri_map().
+-type url() :: emqx_http_lib:uri_map().
 
 -reflect_type([ permission/0
               , action/0
-%             , url/0
+              , url/0
               ]).
 
-% -typerefl_from_string({url/0, emqx_http_lib, uri_parse}).
+-typerefl_from_string({url/0, emqx_http_lib, uri_parse}).
 
 -export([ structs/0
         , fields/1
@@ -28,8 +28,7 @@ fields(http) ->
     , {config, #{type => hoconsc:ref(?MODULE, http_config)}}
     ];
 fields(http_config) ->
-    [ {url, #{type => binary(), validate => [fun check_url/1]}}
-    % {url, #{type => url()}}
+    [ {url, #{type => url()}}
     , {headers, #{type => hoconsc:ref(?MODULE, headers)}}
     , {method,  #{type => hoconsc:enum([get, post]), default => get}}
     ];
@@ -149,11 +148,3 @@ connector_fields(DB) ->
     [ {principal, principal()}
     , {type, #{type => DB}}
     ] ++ Mod:fields("").
-
-check_url(URL) ->
-    case emqx_http_lib:uri_parse(URL) of
-        {ok, _} -> true;
-        {error, _} -> false
-    end.
-
-
