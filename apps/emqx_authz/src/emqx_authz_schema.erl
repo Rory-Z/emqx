@@ -17,13 +17,18 @@
         , fields/1
         ]).
 
-structs() -> ["authorization_rules"].
+% structs() -> ["authorization_rules"].
+%
+% fields("authorization_rules") ->
+%     [ {rules, rules()}
+%     ];
 
-fields("authorization_rules") ->
-    [ {rules, rules()}
-    ];
+structs() -> [{array, authorization_rules}].
+
+fields(authorization_rules) ->
+    [ {authorization_rules, rules()} ];
 fields(file) ->
-    [ {type, #{type => http}}
+    [ {type, #{type => file}}
     , {enable, #{type => boolean(),
                  default => true}}
     , {path, #{type => string(),
