@@ -70,7 +70,7 @@
 -export([conf_get/2, conf_get/3, keys/2, filter/1]).
 -export([ssl/1]).
 
-structs() -> ["zones", "listeners", "broker", "plugins", "sysmon", "alarm", "authorization"].
+structs() -> ["zones", "listeners", "broker", "plugins", "sysmon", "alarm"].
 
 fields("stats") ->
     [ {"enable", t(boolean(), undefined, true)}
@@ -80,10 +80,10 @@ fields("auth") ->
     [ {"enable", t(boolean(), undefined, false)}
     ];
 
-fields("authorization") ->
-    [ {"no_match", t(union(allow, deny), undefined, allow)}
-    , {"deny_action", t(union(ignore, disconnect), undefined, ignore)}
+fields("authorization_settings") ->
+    [ {"enable", t(boolean(), undefined, true)}
     , {"cache", ref("authorization_cache")}
+    , {"deny_action", t(union(ignore, disconnect), undefined, ignore)}
     ];
 
 fields("authorization_cache") ->
@@ -129,6 +129,7 @@ fields("zones") ->
 
 fields("zone_settings") ->
     [ {"mqtt", ref("mqtt")}
+    , {"authorization", ref("authorization_settings")}
     , {"auth", ref("auth")}
     , {"stats", ref("stats")}
     , {"flapping_detect", ref("flapping_detect")}
