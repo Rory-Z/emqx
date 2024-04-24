@@ -1,0 +1,214 @@
+name: Build AMI for cloud
+on:
+  push:
+    branches:
+      - ci/**
+  release:
+    types:
+      - published
+  workflow_dispatch:
+    inputs:
+      tag:
+        type: string
+        required: true
+      publish_release_artefacts:
+        type: boolean
+        required: true
+        default: false
+
+jobs:
+  upload:
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: aws
+            region: us-east-2
+          - platform: aliyun
+            region: cn-shanghai
+          - platform: huaweicloud
+            region: cn-south-1
+
+    defaults:
+      run:
+        shell: bash
+
+    env:
+      CLOUD_API_GATEWAY_VERSION: v1.0-ci-20240329151841
+      TELEPORT_VERSION: 15.1.0
+      VECTOR_VERSION: 0.37.1
+
+    steps:
+      - name: Install packer
+        run: |
+          wget -q -O- https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
+          sudo apt-get update && sudo apt-get install -y packer
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.8'
+      - uses: actions/checkout@v4
+        with:
+          repository: emqx/cloud-deployment-ami
+          ref: dev
+          token: ${{ secrets.CI_GIT_TOKEN }}
+      - name: Get emqx version
+        id: get_version
+        run: |
+          if [ "${{ github.event_name }}" == "push" ]; then
+            emqx_version="5.6.1"
+          elif [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            emqx_version="$(echo ${{ github.event.inputs.tag }} | sed 's/e//')"
+          else
+            emqx_version="$(echo ${{ github.ref_name }} | sed 's/e//')"
+          fi
+          echo "emqx_version=${emqx_version}" >> $GITHUB_OUTPUT
+          echo "ami_version=${emqx_version}" >> $GITHUB_OUTPUT
+          echo "ami_name=emqx-platform-${emqx_version}" >> $GITHUB_OUTPUT
+      - name: Get emqx
+        run: curl -sL -o assets/package/emqx/emqx.deb https://github.com/emqx/emqx/releases/download/e${{ steps.get_version.outputs.emqx_version }}/emqx-enterprise-${{ steps.get_version.outputs.emqx_version }}-ubuntu22.04-amd64.deb
+      - name: Get vector
+        run: curl -sL -o assets/package/vector/vector.deb https://apt.vector.dev/pool/v/ve/vector_${{ env.VECTOR_VERSION }}-1_$(dpkg --print-architecture).deb
+      - name: Get cloud api gateway
+        run: |
+          asset_download_url=$(curl -sL \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${{ secrets.CI_GIT_TOKEN }}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/repos/emqx/cloud-api-gateway/releases/tags/${{ env.CLOUD_API_GATEWAY_VERSION }} | \
+            jq -r '.assets[] | select(.name == "cloud-api-gateway.tar.gz") | .url')
+
+          curl -sL \
+            -H "Accept: application/octet-stream" \
+            -H "Authorization: Bearer ${{ secrets.CI_GIT_TOKEN }}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            ${asset_download_url} | \
+            tar zxvf -
+
+          mv cloud-api-gateway/bin/api-gateway assets/package/api-gateway/bin/
+      - name: Setup AWS
+        if: matrix.platform == 'aws' || matrix.platform == 'aws-cn'
+        env:
+          VPC_ID: vpc-0676c139c6d8c5b66
+          SUBNET_ID: subnet-0d591a44cfa9611a1
+        run: |
+          aws configure set aws_access_key_id ${{ secrets.AMI_BUILDER_AWS_ACCESS_KEY }}
+          aws configure set aws_secret_access_key ${{ secrets.AMI_BUILDER_AWS_ACCESS_SECRET }}
+          aws configure set region ${{ matrix.region }}
+          aws configure set output json
+
+          is_exist=$(aws ec2 describe-images \
+            --region ${{ matrix.region }} \
+            --owners self \
+            --filters "Name=name,Values=${{ steps.get_version.outputs.ami_name }}" | \
+            jq -r '.Images | length')
+
+          if [ $is_exist -ne 0 ]; then
+            echo "Image ${{ steps.get_version.outputs.ami_name }} already exists in region ${{ matrix.region }}"
+            exit 1
+          fi
+
+          cat <<EOF > packer/scripts/${{ matrix.platform }}/build.auto.pkrvars.hcl
+          region = "${{ matrix.region }}"
+          access_key = "${{ secrets.AMI_BUILDER_AWS_ACCESS_KEY }}"
+          secret_key = "${{ secrets.AMI_BUILDER_AWS_ACCESS_SECRET }}"
+          vpc_id = "${{ env.VPC_ID }}"
+          subnet_id = "${{ env.SUBNET_ID }}"
+          teleport_version = "${{ env.TELEPORT_VERSION }}"
+          image_version = "${{ steps.get_version.outputs.ami_version }}"
+          emqx_version = "${{ steps.get_version.outputs.emqx_version }}"
+          emqx-platform_image_name = "${{ steps.get_version.outputs.ami_name }}"
+          EOF
+
+          cd packer/scripts/${{ matrix.platform }}
+          find . -type f -name "build_*.pkr.hcl" -exec sed '2i\  associate_public_ip_address = true' -i {} \;
+          packer fmt .
+
+      - name: Setup Aliyun
+        if: matrix.platform == 'aliyun'
+        env:
+          INSTANCE_TYPE: ecs.c5.large
+        run: |
+          aliyun configure set --profile akProfile --mode AK --region ${{ matrix.region }} --access-key-id ${{ secrets.AMI_BUILDER_ALIYUN_ACCESS_KEY }} --access-key-secret ${{ secrets.AMI_BUILDER_ALIYUN_ACCESS_SECRET }}
+
+          is_exist=$(aliyun ecs DescribeImages \
+            --RegionId ${{ matrix.region }} \
+            --ImageOwnerAlias self \
+            --ImageName "${{ steps.get_version.outputs.ami_name }}" | \
+            jq -r '.TotalCount')
+          if [ $is_exist -ne 0 ]; then
+            echo "Image ${{ steps.get_version.outputs.ami_name }} already exists in region ${{ matrix.region }}"
+            exit 1
+          fi
+
+          is_available=$(aliyun ecs DescribeAvailableResource \
+            --RegionId=${{ matrix.region }} \
+            --DestinationResource=InstanceType \
+            --InstanceType=${{ env.INSTANCE_TYPE }} | \
+            jq -r '.AvailableZones.AvailableZone[0].AvailableResources.AvailableResource[0].SupportedResources.SupportedResource[] | select(.Status == "Available")')
+          if [ -z "$is_available" ]; then
+            echo "Instance type ${{ env.INSTANCE_TYPE }} is not available in region ${{ matrix.region }}"
+            exit 1
+          fi
+
+          cat <<EOF > packer/scripts/${{ matrix.platform }}/build.auto.pkrvars.hcl
+          region = "${{ matrix.region }}"
+          access_key = "${{ secrets.AMI_BUILDER_ALIYUN_ACCESS_KEY }}"
+          secret_key = "${{ secrets.AMI_BUILDER_ALIYUN_ACCESS_SECRET }}"
+          source_image = "$(aliyun ecs DescribeImages --PageSize 100 | jq -r '[ .Images.Image[] | select(.ImageName | test("ubuntu_22_04_x64_.*_alibase_.*.vhd")) ] | first | .ImageId')"
+          instance_type = "${{ env.INSTANCE_TYPE }}"
+          teleport_version = "${{ env.TELEPORT_VERSION }}"
+          image_version = "${{ steps.get_version.outputs.ami_version }}"
+          emqx_version = "${{ steps.get_version.outputs.emqx_version }}"
+          emqx-platform_image_name = "${{ steps.get_version.outputs.ami_name }}"
+          EOF
+      - name: Setup huawei cloud
+        if: matrix.platform == 'huaweicloud'
+        env:
+          INSTANCE_TYPE: c7.large.4
+        run: |
+          curl -q -sSL https://cn-north-4-hdn-koocli.obs.cn-north-4.myhuaweicloud.com/cli/latest/hcloud_install.sh -o ./hcloud_install.sh && sudo bash ./hcloud_install.sh -y
+          sudo chmod +x /usr/local/bin/hcloud
+
+          hcloud configure set \
+            --cli-agree-privacy-statement=true \
+            --cli-mode=AKSK \
+            --cli-region=${{ matrix.region }} \
+            --cli-access-key=${{ secrets.AMI_BUILDER_HUAWEICLOUD_ACCESS_KEY }} \
+            --cli-secret-key=${{ secrets.AMI_BUILDER_HUAWEICLOUD_ACCESS_SECRET }}
+
+          is_exist=$(hcloud IMS ListImages --name=${{ steps.get_version.outputs.ami_name }} | jq -r '.images | length')
+          if [ $is_exist -ne 0 ]; then
+            echo "Image ${{ steps.get_version.outputs.ami_name }} already exists in region ${{ matrix.region }}"
+            exit 1
+          fi
+
+          cat <<EOF > packer/scripts/${{ matrix.platform }}/build.auto.pkrvars.hcl
+          region = "${{ matrix.region }}"
+          access_key = "${{ secrets.AMI_BUILDER_HUAWEICLOUD_ACCESS_KEY }}"
+          secret_key = "${{ secrets.AMI_BUILDER_HUAWEICLOUD_ACCESS_SECRET }}"
+          flavor = "${{ env.INSTANCE_TYPE }}"
+          image_version = "${{ steps.get_version.outputs.ami_version }}"
+          emqx_version = "${{ steps.get_version.outputs.emqx_version }}"
+          emqx-platform_image_name = "${{ steps.get_version.outputs.ami_name }}"
+          EOF
+      - name: Build AMI
+        run: |
+          chmod +x ./packer/files/provisioner.sh && ./packer/files/provisioner.sh
+
+          if [ "${{ matrix.platform }}" == "aliyun" ]; then
+            packer plugins install github.com/hashicorp/alicloud
+          elif [ "${{ matrix.platform }}" == "aws-cn" ]; then
+            packer init packer/scripts/aws/aws_builder_plugin.pkr.hcl
+          else
+            packer init packer/scripts/${{ matrix.platform }}/${{ matrix.platform }}_builder_plugin.pkr.hcl
+          fi
+
+          mkdir -p ~/.ssh
+          cp packer/files/.ssh/5.0/id_rsa ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+
+          cp packer/build_ami.py packer/scripts/${{ matrix.platform }}
+          cd packer/scripts/${{ matrix.platform }}
+          python3 build_ami.py -p ${{ matrix.platform }} -v ${{ steps.get_version.outputs.ami_version }}
